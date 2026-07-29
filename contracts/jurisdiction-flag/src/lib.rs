@@ -21,6 +21,13 @@ use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contract
 
 #[contracttype]
 #[derive(Clone)]
+pub struct Metadata {
+    pub version: String,
+    pub admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone)]
 enum DataKey {
     Issuer,
     Jurisdiction(Address),
@@ -56,6 +63,19 @@ impl JurisdictionFlag {
         issuer.require_auth();
         env.storage().instance().set(&DataKey::Issuer, &issuer);
         Ok(())
+    }
+
+    /// Returns metadata about this contract instance, including version and admin (issuer) address.
+    pub fn metadata(env: Env) -> Result<Metadata, Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Issuer)
+            .ok_or(Error::NotInitialized)?;
+        Ok(Metadata {
+            version: String::from_slice(&env, env!("CARGO_PKG_VERSION")),
+            admin,
+        })
     }
 
     /// Attach jurisdiction `code` to `address`. Issuer-only.

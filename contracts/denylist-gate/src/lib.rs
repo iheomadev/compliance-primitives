@@ -16,7 +16,14 @@
 //! example of a token contract wiring `check()` into its `transfer` path.
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String};
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Metadata {
+    pub version: String,
+    pub admin: Address,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -60,6 +67,19 @@ impl DenylistGate {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         Ok(())
+    }
+
+    /// Returns metadata about this contract instance, including version and admin address.
+    pub fn metadata(env: Env) -> Result<Metadata, Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        Ok(Metadata {
+            version: String::from_slice(&env, env!("CARGO_PKG_VERSION")),
+            admin,
+        })
     }
 
     /// Add `address` to the denylist. Admin-only.
