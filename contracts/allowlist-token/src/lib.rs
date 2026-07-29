@@ -59,6 +59,11 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NotAuthorized = 3,
+    /// Caller supplied an argument that is structurally invalid — e.g. a
+    /// negative token amount.  Discriminant 4 is reserved for this variant
+    /// across all three contracts so audit tooling can pattern-match on it
+    /// without knowing which contract it originated from.
+    InvalidInput = 4,
 }
 
 #[contract]
@@ -117,6 +122,13 @@ impl AllowlistToken {
     /// lets the audit event actually land. `Err` is reserved for
     /// configuration failures (e.g. the contract was never initialized).
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<bool, Error> {
+        // Reject structurally invalid inputs before touching auth or storage.
+        // i128 allows negative values; a negative token amount is never
+        // meaningful and could be exploited to bypass downstream checks.
+        if amount < 0 {
+            return Err(Error::InvalidInput);
+        }
+
         from.require_auth();
 
         if !Self::is_allowed(env.clone(), from.clone()) || !Self::is_allowed(env.clone(), to.clone()) {
