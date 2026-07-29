@@ -17,7 +17,7 @@
 //! uses — rather than deployed standalone.
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env, String, Vec};
 
 #[contracttype]
 #[derive(Clone)]
@@ -31,6 +31,11 @@ pub struct JurisdictionSet {
     #[topic]
     pub address: Address,
     pub code: String,
+}
+
+#[contractevent]
+pub struct UpgradePerformed {
+    pub issuer: Address,
 }
 
 #[contracterror]
@@ -86,6 +91,23 @@ impl JurisdictionFlag {
             Some(code) => allowed_codes.iter().any(|c| c == code),
             None => false,
         }
+    }
+
+    /// Upgrade the contract to a new implementation. Issuer-only.
+    ///
+    /// Calls `update_current_contract_wasm` to upgrade the running contract code.
+    /// Existing jurisdiction mappings and the issuer key are preserved across the upgrade.
+    ///
+    /// # Security model
+    /// - Only the initialized issuer can trigger an upgrade
+    /// - All persistent storage (jurisdiction mappings) is preserved
+    /// - The instance storage (issuer key) is preserved
+    /// - An `UpgradePerformed` event is emitted for auditability
+    pub fn upgrade(env: Env, issuer: Address, new_wasm: Bytes) -> Result<(), Error> {
+        Self::require_issuer(&env, &issuer)?;
+        env.deployer().update_current_contract_wasm(new_wasm);
+        UpgradePerformed { issuer }.publish(&env);
+        Ok(())
     }
 
     fn require_issuer(env: &Env, issuer: &Address) -> Result<(), Error> {

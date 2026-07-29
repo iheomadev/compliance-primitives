@@ -106,3 +106,46 @@ fn test_double_initialize_fails() {
     let result = client.try_initialize(&issuer);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
+
+#[test]
+fn test_upgrade_requires_issuer_auth() {
+    let env = Env::default();
+    let (issuer, _contract_id, client) = setup(&env);
+    let non_issuer = Address::generate(&env);
+    let dummy_wasm = soroban_sdk::Bytes::new(&env);
+
+    let result = client.try_upgrade(&non_issuer, &dummy_wasm);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn test_upgrade_preserves_jurisdiction_storage() {
+    let env = Env::default();
+    let (issuer, _contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let code = String::from_str(&env, "US");
+
+    // Set a jurisdiction before upgrade
+    client.set_jurisdiction(&issuer, &alice, &code);
+    assert_eq!(client.get_jurisdiction(&alice), Some(code.clone()));
+
+    // Perform upgrade with dummy wasm (in real scenario, this would be new contract code)
+    let dummy_wasm = soroban_sdk::Bytes::new(&env);
+    client.upgrade(&issuer, &dummy_wasm);
+
+    // Verify jurisdiction is still there after "upgrade"
+    // Note: In a real upgrade scenario, the new contract must maintain the same storage layout
+    assert_eq!(client.get_jurisdiction(&alice), Some(code));
+}
+
+#[test]
+fn test_upgrade_emits_event() {
+    let env = Env::default();
+    let (issuer, _contract_id, client) = setup(&env);
+    let dummy_wasm = soroban_sdk::Bytes::new(&env);
+
+    client.upgrade(&issuer, &dummy_wasm);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 1);
+}
