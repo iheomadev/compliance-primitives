@@ -18,6 +18,13 @@
 
 use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String};
 
+/// Shared compliance check interface.
+/// Allows external contracts to call any of the three compliance primitives
+/// with a uniform `(address) -> bool` calling convention.
+pub trait ComplianceCheck {
+    fn is_compliant(env: Env, address: Address) -> bool;
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Metadata {
@@ -124,6 +131,16 @@ impl DenylistGate {
             return Err(Error::NotAuthorized);
         }
         Ok(())
+    }
+}
+
+/// Implementation of the shared ComplianceCheck trait for denylist-gate.
+/// Allows external contracts to call this contract through a unified interface.
+impl ComplianceCheck for DenylistGate {
+    /// Returns true if the address is NOT on the denylist (i.e., is compliant).
+    /// Equivalent to the `check()` function.
+    fn is_compliant(env: Env, address: Address) -> bool {
+        DenylistGate::check(env, address)
     }
 }
 

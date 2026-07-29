@@ -290,3 +290,99 @@ fn test_metadata_available_on_all_contracts() {
     // let denylist_meta = setup.denylist_gate.metadata();
     // let jurisdiction_meta = setup.jurisdiction_flag.metadata();
 }
+
+#[test]
+fn test_unified_compliance_check_interface() {
+    // TEST: Demonstrate the shared ComplianceCheck interface (Issue #25)
+    //
+    // This shows how external contracts can call any of the three compliance
+    // primitives through a unified `is_compliant(address) -> bool` interface.
+    let env = Env::default();
+    let setup = setup_compliance_contracts(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+
+    // Set up different compliance states
+    // Alice: allowlisted, not denied, has jurisdiction
+    setup.allowlist_token.add_to_allowlist(&setup.allowlist_admin, &alice);
+    let usa_code = String::from_slice(&env, "US");
+    setup.jurisdiction_flag.set_jurisdiction(&setup.issuer, &alice, &usa_code);
+
+    // Bob: not allowlisted, not denied, has jurisdiction
+    setup.jurisdiction_flag.set_jurisdiction(&setup.issuer, &bob, &usa_code);
+
+    // Charlie: allowlisted, denied, no jurisdiction
+    setup.allowlist_token.add_to_allowlist(&setup.allowlist_admin, &charlie);
+    setup.denylist_gate.add_to_denylist(&setup.denylist_admin, &charlie);
+
+    // Test calling through specialized interfaces
+    assert!(setup.allowlist_token.is_allowed(&alice));
+    assert!(setup.denylist_gate.check(&alice));
+    assert!(setup.jurisdiction_flag.get_jurisdiction(&alice).is_some());
+
+    // Test calling through UNIFIED ComplianceCheck interface
+    // All three can now be called with the same pattern:
+    // contract.is_compliant(address) -> bool
+    assert!(setup.allowlist_token.is_compliant(&alice));
+    assert!(setup.denylist_gate.is_compliant(&alice));
+    assert!(setup.jurisdiction_flag.is_compliant(&alice));
+
+    // For bob (not allowlisted, but has jurisdiction):
+    assert!(!setup.allowlist_token.is_compliant(&bob)); // fails allowlist check
+    assert!(setup.denylist_gate.is_compliant(&bob));    // passes denylist check
+    assert!(setup.jurisdiction_flag.is_compliant(&bob)); // passes jurisdiction check
+
+    // For charlie (allowlisted, but denied):
+    assert!(setup.allowlist_token.is_compliant(&charlie)); // passes allowlist check
+    assert!(!setup.denylist_gate.is_compliant(&charlie));  // fails denylist check
+    assert!(!setup.jurisdiction_flag.is_compliant(&charlie)); // fails jurisdiction check
+
+    // ✓ Demonstrates that each contract implements the unified interface
+    // External contracts can now compose these primitives polymorphically
+}
+
+#[test]
+fn test_compliance_check_enables_polymorphic_composition() {
+    // ADVANCED TEST: Show how the unified interface enables polymorphic composition
+    //
+    // This demonstrates how external contracts can check multiple compliance
+    // primitives without knowing which specific contract they're calling.
+    let env = Env::default();
+    let setup = setup_compliance_contracts(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Set up: both compliant
+    setup.allowlist_token.add_to_allowlist(&setup.allowlist_admin, &alice);
+    setup.allowlist_token.add_to_allowlist(&setup.allowlist_admin, &bob);
+
+    let usa_code = String::from_slice(&env, "US");
+    setup.jurisdiction_flag.set_jurisdiction(&setup.issuer, &alice, &usa_code);
+    setup.jurisdiction_flag.set_jurisdiction(&setup.issuer, &bob, &usa_code);
+
+    // Simulated "compliance check pass-through" function
+    // In a real contract, this might be:
+    // fn check_compliance(compliance_contract: Address, address: Address) -> bool {
+    //     let client = ComplianceCheckClient::new(env, &compliance_contract);
+    //     client.is_compliant(&address)
+    // }
+
+    // All three can be used interchangeably with the same check pattern:
+    assert!(setup.allowlist_token.is_compliant(&alice));
+    assert!(setup.denylist_gate.is_compliant(&alice));
+    assert!(setup.jurisdiction_flag.is_compliant(&alice));
+
+    assert!(setup.allowlist_token.is_compliant(&bob));
+    assert!(setup.denylist_gate.is_compliant(&bob));
+    assert!(setup.jurisdiction_flag.is_compliant(&bob));
+
+    // ✓ This demonstrates backward compatibility:
+    // Specialized functions still work
+    assert!(setup.allowlist_token.is_allowed(&alice));
+    assert!(setup.denylist_gate.check(&alice));
+    let permitted_codes = soroban_sdk::vec![&env, usa_code.clone()];
+    assert!(setup.jurisdiction_flag.is_permitted_jurisdiction(&alice, &permitted_codes));
+}

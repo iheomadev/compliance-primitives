@@ -22,12 +22,20 @@ use soroban_sdk::{Address, Env, String};
 // These allow us to call the three compliance contracts without linking their full implementations
 use soroban_sdk::contractclient;
 
+/// Shared compliance check interface - unified way to call any compliance contract.
+/// All three primitives implement this trait with `is_compliant(address) -> bool`.
+#[contractclient(name = "ComplianceCheckClient")]
+pub trait ComplianceCheckInterface {
+    fn is_compliant(env: Env, address: Address) -> bool;
+}
+
 #[contractclient(name = "AllowlistTokenClient")]
 pub trait AllowlistTokenInterface {
     fn initialize(env: Env, admin: Address, token: Address) -> Result<(), soroban_sdk::contracterror::ContractError>;
     fn add_to_allowlist(env: Env, admin: Address, address: Address) -> Result<(), soroban_sdk::contracterror::ContractError>;
     fn remove_from_allowlist(env: Env, admin: Address, address: Address) -> Result<(), soroban_sdk::contracterror::ContractError>;
     fn is_allowed(env: Env, address: Address) -> bool;
+    fn is_compliant(env: Env, address: Address) -> bool;
 }
 
 #[contractclient(name = "DenylistGateClient")]
@@ -36,6 +44,7 @@ pub trait DenylistGateInterface {
     fn add_to_denylist(env: Env, admin: Address, address: Address) -> Result<(), soroban_sdk::contracterror::ContractError>;
     fn remove_from_denylist(env: Env, admin: Address, address: Address) -> Result<(), soroban_sdk::contracterror::ContractError>;
     fn check(env: Env, address: Address) -> bool;
+    fn is_compliant(env: Env, address: Address) -> bool;
 }
 
 #[contractclient(name = "JurisdictionFlagClient")]
@@ -44,6 +53,7 @@ pub trait JurisdictionFlagInterface {
     fn set_jurisdiction(env: Env, issuer: Address, address: Address, code: String) -> Result<(), soroban_sdk::contracterror::ContractError>;
     fn get_jurisdiction(env: Env, address: Address) -> Option<String>;
     fn is_permitted_jurisdiction(env: Env, address: Address, allowed_codes: soroban_sdk::Vec<String>) -> bool;
+    fn is_compliant(env: Env, address: Address) -> bool;
 }
 
 #[cfg(test)]

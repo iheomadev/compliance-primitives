@@ -19,6 +19,13 @@
 
 use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String, Vec};
 
+/// Shared compliance check interface.
+/// Allows external contracts to call any of the three compliance primitives
+/// with a uniform `(address) -> bool` calling convention.
+pub trait ComplianceCheck {
+    fn is_compliant(env: Env, address: Address) -> bool;
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Metadata {
@@ -119,6 +126,18 @@ impl JurisdictionFlag {
             return Err(Error::NotAuthorized);
         }
         Ok(())
+    }
+}
+
+/// Implementation of the shared ComplianceCheck trait for jurisdiction-flag.
+/// Allows external contracts to call this contract through a unified interface.
+impl ComplianceCheck for JurisdictionFlag {
+    /// Returns true if the address has a jurisdiction code set (i.e., has been verified).
+    /// Note: This is a simplified version that checks for any jurisdiction being set,
+    /// not whether it's in a specific permitted list. Use `is_permitted_jurisdiction()`
+    /// for jurisdiction whitelist checks.
+    fn is_compliant(env: Env, address: Address) -> bool {
+        JurisdictionFlag::get_jurisdiction(env, address).is_some()
     }
 }
 
