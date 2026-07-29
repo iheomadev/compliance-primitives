@@ -1,10 +1,10 @@
 [package]
-name = "allowlist-token"
+name = "jurisdiction-denylist-consumer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Soroban token wrapper that only permits transfers between allowlisted addresses."
+description = "Example token contract combining jurisdiction-flag and denylist-gate checks before transferring."
 publish = false
 
 [lib]
@@ -16,8 +16,8 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-denylist-gate = { path = "../denylist-gate", features = ["testutils"] }
-denylist-gate-consumer = { path = "../../examples/denylist-gate-consumer", features = ["testutils"] }
+denylist-gate = { path = "../../contracts/denylist-gate", features = ["testutils"] }
+jurisdiction-flag = { path = "../../contracts/jurisdiction-flag", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
