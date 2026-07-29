@@ -23,6 +23,10 @@ contribution are also tagged `good first issue`.
    cargo clippy --workspace --all-targets -- -D warnings
    ```
    Both must pass locally — the same checks run in CI on every PR.
+
+   Optional: for sequence-fuzz harnesses (jurisdiction-flag today; denylist-gate
+   when #86 lands), see [`fuzz/README.md`](./fuzz/README.md) for how to run a
+   longer campaign periodically. These are not part of CI.
 6. **Open a pull request** against `main`, referencing the issue it closes
    (e.g. `Closes #12`). Describe what changed and why.
 

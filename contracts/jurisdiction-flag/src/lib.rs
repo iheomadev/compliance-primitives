@@ -7,10 +7,11 @@
 //! of jurisdictions without each one reimplementing that bookkeeping.
 //!
 //! **Callers**: only the configured `issuer` address may call
-//! `set_jurisdiction`. Any contract or off-chain client can read a flag via
-//! `get_jurisdiction`, and contracts enforcing a jurisdiction allowlist can
-//! call `is_permitted_jurisdiction(address, allowed_codes)` directly as part
-//! of their own compliance checks.
+//! `set_jurisdiction` / `remove_jurisdiction_multiple`. Any contract or
+//! off-chain client can read a flag via `get_jurisdiction`, and contracts
+//! enforcing a jurisdiction allowlist can call
+//! `is_permitted_jurisdiction(address, allowed_codes)` directly as part of
+//! their own compliance checks.
 //!
 //! **Composition**: designed to be called into from another contract's
 //! `transfer` or similar gating logic — the same pattern `denylist-gate`
@@ -73,6 +74,31 @@ impl JurisdictionFlag {
         Ok(())
     }
 
+    /// Remove stored jurisdiction codes for each address in `addresses`.
+    ///
+    /// Authorizes `issuer` once via [`Self::require_issuer`], then clears
+    /// `DataKey::Jurisdiction` for every entry. Addresses that never had a
+    /// code set are skipped (no-op per address). An empty `addresses` vec is
+    /// also a no-op after the auth check.
+    ///
+    /// **Batch size**: no `MAX_BATCH_SIZE` guard is applied here yet. Issue
+    /// #73 will introduce a shared cap and `Error::BatchTooLarge` across all
+    /// batch entry points (#69/#70/#71 and this function) so the limit lands
+    /// consistently rather than being bolted on per-function.
+    pub fn remove_jurisdiction_multiple(
+        env: Env,
+        issuer: Address,
+        addresses: Vec<Address>,
+    ) -> Result<(), Error> {
+        Self::require_issuer(&env, &issuer)?;
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Jurisdiction(address));
+        }
+        Ok(())
+    }
+
     /// Returns the jurisdiction code attached to `address`, if any.
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         env.storage().persistent().get(&DataKey::Jurisdiction(address))
@@ -104,3 +130,6 @@ impl JurisdictionFlag {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod fuzz;

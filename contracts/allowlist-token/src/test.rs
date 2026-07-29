@@ -206,3 +206,131 @@ fn test_remove_from_allowlist_emits_allow_remove_event() {
         ]
     );
 }
+
+#[test]
+fn test_add_to_allowlist_extends_persistent_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    use soroban_sdk::testutils::Ledger;
+
+    let env = Env::default();
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100_000;
+        li.min_persistent_entry_ttl = 500;
+        li.max_entry_ttl = 6_311_520;
+    });
+
+    let (admin, _token_id, contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+
+    client.add_to_allowlist(&admin, &alice);
+
+    env.as_contract(&contract_id, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Allowed(alice.clone()));
+        assert_eq!(
+            ttl, ALLOWED_TTL_EXTEND_TO,
+            "fresh allowlist write should bump TTL to ALLOWED_TTL_EXTEND_TO"
+        );
+    });
+
+    // Advance far enough that remaining TTL falls below the threshold, then
+    // re-add and confirm extension runs again.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += ALLOWED_TTL_EXTEND_TO - ALLOWED_TTL_THRESHOLD + 1;
+    });
+    env.as_contract(&contract_id, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Allowed(alice.clone()));
+        assert!(
+            ttl < ALLOWED_TTL_THRESHOLD,
+            "TTL should be below threshold after ledger bump, got {ttl}"
+        );
+    });
+
+    client.add_to_allowlist(&admin, &alice);
+    env.as_contract(&contract_id, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Allowed(alice.clone()));
+        assert_eq!(ttl, ALLOWED_TTL_EXTEND_TO);
+    });
+}
+
+/// Property: after any sequence of add/remove on a fixed address pool,
+/// `is_allowed(addr)` matches whether the last op touching `addr` was an add.
+#[test]
+fn prop_allowlist_add_remove_last_write_wins() {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Add(usize),
+        Remove(usize),
+    }
+
+    let mut runner = TestRunner::new(Config {
+        cases: 64,
+        max_shrink_iters: 100,
+        ..Config::default()
+    });
+
+    runner
+        .run(
+            &(1usize..32).prop_flat_map(|len| {
+                proptest::collection::vec(
+                    (0usize..4).prop_flat_map(|addr_i| {
+                        proptest::bool::ANY.prop_map(move |is_add| {
+                            if is_add {
+                                Op::Add(addr_i)
+                            } else {
+                                Op::Remove(addr_i)
+                            }
+                        })
+                    }),
+                    len,
+                )
+            }),
+            |ops| {
+                let env = Env::default();
+                let (admin, _token_id, _contract_id, client) = setup(&env);
+                let addresses: [Address; 4] = [
+                    Address::generate(&env),
+                    Address::generate(&env),
+                    Address::generate(&env),
+                    Address::generate(&env),
+                ];
+                let mut model = [false; 4];
+
+                for op in &ops {
+                    match *op {
+                        Op::Add(i) => {
+                            client.add_to_allowlist(&admin, &addresses[i]);
+                            model[i] = true;
+                        }
+                        Op::Remove(i) => {
+                            client.remove_from_allowlist(&admin, &addresses[i]);
+                            model[i] = false;
+                        }
+                    }
+                }
+
+                for (i, address) in addresses.iter().enumerate() {
+                    prop_assert_eq!(
+                        client.is_allowed(address),
+                        model[i],
+                        "addr {} mismatch after {:?}",
+                        i,
+                        ops
+                    );
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+}
