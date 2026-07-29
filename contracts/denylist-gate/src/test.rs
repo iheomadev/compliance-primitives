@@ -86,3 +86,129 @@ fn test_double_initialize_fails() {
     let result = client.try_initialize(&admin);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
+
+#[test]
+fn test_multisig_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+
+    let contract_id = env.register(DenylistGate, ());
+    let client = DenylistGateClient::new(&env, &contract_id);
+
+    // Initialize single-admin first
+    client.initialize(&admin);
+
+    // Then convert to multisig (2-of-3)
+    let signers = vec![&env, admin.clone(), signer1.clone(), signer2.clone()];
+    let result = client.try_initialize_multisig(&admin, &signers, &3);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_multisig_invalid_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+
+    let contract_id = env.register(DenylistGate, ());
+    let client = DenylistGateClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Try to set threshold higher than signer count
+    let signers = vec![&env, admin.clone(), signer1.clone()];
+    let result = client.try_initialize_multisig(&admin, &signers, &5);
+    assert_eq!(result, Err(Ok(Error::InvalidThreshold)));
+}
+
+#[test]
+fn test_multisig_empty_signers_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(DenylistGate, ());
+    let client = DenylistGateClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Try to initialize with empty signer set
+    let signers = vec![&env];
+    let result = client.try_initialize_multisig(&admin, &signers, &1);
+    assert_eq!(result, Err(Ok(Error::InvalidSignerSet)));
+}
+
+#[test]
+fn test_multisig_add_signer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let new_signer = Address::generate(&env);
+
+    let contract_id = env.register(DenylistGate, ());
+    let client = DenylistGateClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Initialize 2-of-2 multisig
+    let signers = vec![&env, admin.clone(), signer1.clone()];
+    client.initialize_multisig(&admin, &signers, &2);
+
+    // Add a new signer
+    let result = client.try_add_signer(&new_signer);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_multisig_remove_signer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+
+    let contract_id = env.register(DenylistGate, ());
+    let client = DenylistGateClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Initialize 2-of-3 multisig
+    let signers = vec![&env, admin.clone(), signer1.clone(), signer2.clone()];
+    client.initialize_multisig(&admin, &signers, &2);
+
+    // Remove one signer (should still have 2)
+    let result = client.try_remove_signer(&signer2);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_multisig_remove_signer_fails_if_only_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+
+    let contract_id = env.register(DenylistGate, ());
+    let client = DenylistGateClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Initialize 1-of-1 multisig
+    let signers = vec![&env, admin.clone()];
+    client.initialize_multisig(&admin, &signers, &1);
+
+    // Try to remove the only signer (should fail)
+    let result = client.try_remove_signer(&admin);
+    assert_eq!(result, Err(Ok(Error::InvalidSignerSet)));
+}
