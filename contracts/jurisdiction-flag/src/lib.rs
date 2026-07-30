@@ -247,6 +247,23 @@ impl JurisdictionFlag {
         })
     }
 
+    /// Upgrade the contract to a new implementation. Issuer-only.
+    ///
+    /// Calls `update_current_contract_wasm` to upgrade the running contract code.
+    /// Existing jurisdiction mappings and the issuer key are preserved across the upgrade.
+    ///
+    /// # Security model
+    /// - Only the initialized issuer can trigger an upgrade
+    /// - All persistent storage (jurisdiction mappings) is preserved
+    /// - The instance storage (issuer key) is preserved
+    /// - An `UpgradePerformed` event is emitted for auditability
+    pub fn upgrade(env: Env, issuer: Address, new_wasm: Bytes) -> Result<(), Error> {
+        Self::require_issuer(&env, &issuer)?;
+        env.deployer().update_current_contract_wasm(new_wasm);
+        UpgradePerformed { issuer }.publish(&env);
+        Ok(())
+    }
+
     fn require_issuer(env: &Env, issuer: &Address) -> Result<(), Error> {
         issuer.require_auth();
         let stored_issuer: Address = env.storage().instance().get(&DataKey::Issuer).ok_or(Error::NotInitialized)?;
