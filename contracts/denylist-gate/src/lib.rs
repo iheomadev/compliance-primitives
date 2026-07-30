@@ -18,11 +18,25 @@
 //! **Composition**: this contract is meant to be called into, not deployed
 //! as a token itself. See `/examples/denylist-gate-consumer` for a worked
 //! example of a token contract wiring `check()` into its `transfer` path.
+//!
+//! **Audit-log integration (opt-in)**: call `set_audit_log(admin,
+//! audit_log_address)` after deploying to wire in an `audit-log` contract
+//! instance. Once set, every `add_to_denylist` and `remove_from_denylist`
+//! call will additionally invoke `audit_log.record(...)` as a structured
+//! compliance event. If `set_audit_log` is never called the behaviour is
+//! identical to before — the extra call path is guarded by an
+//! `Option<Address>` check on the stored audit-log address.
 #![no_std]
 
-use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
-};
+use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Vec};
+
+/// Batch operations are capped to reduce the chance of a single invocation
+/// exceeding Soroban instruction/resource limits.
+const MAX_BATCH_SIZE: u32 = 100;
+
+// ---------------------------------------------------------------------------
+// Storage
+// ---------------------------------------------------------------------------
 
 /// Storage keys for this contract's state.
 #[contracttype]
@@ -30,10 +44,17 @@ use soroban_sdk::{
 enum DataKey {
     /// The admin address, set once in `initialize`. Instance storage.
     Admin,
-    /// Whether a given address is on the denylist. Persistent storage,
-    /// keyed per address.
+    Paused,
     Denied(Address),
+    /// Optional address of an `audit-log` contract to emit structured
+    /// compliance events to. Not set by default — must be explicitly
+    /// configured via `set_audit_log`.
+    AuditLog,
 }
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
 
 #[contractevent]
 pub struct DenyAdd {
@@ -78,6 +99,10 @@ pub enum Error {
     SignerNotInSet = 7,
 }
 
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
+
 #[contract]
 pub struct DenylistGate;
 
@@ -103,75 +128,117 @@ impl DenylistGate {
         Ok(())
     }
 
-    /// Add `address` to the denylist and emit a [`DenyAdd`] event.
-    ///
-    /// # Auth
-    /// Admin-only: `admin` must authorize the call and match the stored admin.
-    ///
-    /// # Returns
-    /// `Ok(())` on success. Calling this again for an already-denied address
-    /// is a no-op aside from emitting another [`DenyAdd`] event.
-    ///
-    /// # Errors
-    /// - [`Error::NotInitialized`] if `initialize` has not been called.
-    /// - [`Error::NotAuthorized`] if `admin` is not the stored admin.
-    pub fn add_to_denylist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+    /// Pause admin mutations (`add_to_denylist` / `remove_from_denylist`).
+    /// `check()` continues to work while paused. Admin-only.
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
-        env.storage().persistent().set(&DataKey::Denied(address.clone()), &true);
+        env.storage().instance().set(&DataKey::Paused, &true);
+        GatePaused { paused: true }.publish(&env);
+        Ok(())
+    }
+
+    /// Resume admin mutations after a `pause`. Admin-only.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::Paused, &false);
+        GateUnpaused { paused: false }.publish(&env);
+        Ok(())
+    }
+
+    /// Add `address` to the denylist. Admin-only.
+    ///
+    /// # Storage TTL
+    /// Denylist entries use persistent storage. If an entry were to fall out
+    /// of the ledger's live-state window (archival) and the archive were not
+    /// restored, `check()` would return `true` ("clear to transact") for the
+    /// archived address — a **fail-open** footgun that is far more dangerous
+    /// than the analogous case for an allowlist.
+    ///
+    /// To guard against this, we extend the TTL to `MAX_TTL` immediately
+    /// after writing.  `MAX_TTL` (1 year ≈ 6 311 520 ledgers at 5 s/ledger)
+    /// should be refreshed by the keeper script on every admin write; this
+    /// call ensures a fresh write always starts with the maximum window.
+    pub fn add_to_denylist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        Self::reject_if_paused(&env)?;
+        Self::require_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ComplianceOfficer, &officer);
+        Ok(())
+    }
+
+    /// Revoke the compliance-officer role. Admin-only.
+    pub fn revoke_compliance_officer(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        let key = DataKey::Denied(address.clone());
+        env.storage().persistent().set(&key, &true);
+
+        // Extend to ~1 year (6_311_520 ledgers at 5 s each).  The threshold
+        // is set to half that so a keeper calling extend on every admin
+        // interaction keeps entries perpetually live without on-chain storage
+        // for the extension schedule.
+        const MAX_TTL: u32 = 6_311_520;
+        const THRESHOLD: u32 = MAX_TTL / 2;
+        env.storage()
+            .instance()
+            .remove(&DataKey::ComplianceOfficer);
+        Ok(())
+    }
+
+    /// Add `address` to the denylist. Admin or compliance-officer.
+    pub fn add_to_denylist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        Self::require_compliance_authority(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, THRESHOLD, MAX_TTL);
+
         DenyAdd { address }.publish(&env);
         Ok(())
     }
 
-    /// Remove `address` from the denylist and emit a [`DenyRemove`] event.
-    ///
-    /// # Auth
-    /// Admin-only: `admin` must authorize the call and match the stored admin.
-    ///
-    /// # Returns
-    /// `Ok(())` on success. Removing an address that was never denied (or
-    /// was already removed) still succeeds and emits [`DenyRemove`].
-    ///
-    /// # Errors
-    /// - [`Error::NotInitialized`] if `initialize` has not been called.
-    /// - [`Error::NotAuthorized`] if `admin` is not the stored admin.
+    /// Remove `address` from the denylist. Admin or compliance-officer.
     pub fn remove_from_denylist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        Self::reject_if_paused(&env)?;
         Self::require_admin(&env, &admin)?;
-        env.storage().persistent().remove(&DataKey::Denied(address.clone()));
-        DenyRemove { address }.publish(&env);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Denied(address.clone()));
+        DenyRemove {
+            address: address.clone(),
+        }
+        .publish(&env);
+
+        Self::maybe_record(
+            &env,
+            &address,
+            Symbol::new(&env, "deny_remove"),
+            String::from_str(&env, "removed from denylist"),
+        );
+
         Ok(())
     }
 
-    /// Returns the stored admin address.
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+    /// Remove every address in `addresses` from the denylist. Admin-only.
+    pub fn remove_multiple_from_denylist(env: Env, admin: Address, addresses: Vec<Address>) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if addresses.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Denied(address.clone()));
+            DenyRemove { address }.publish(&env);
+        }
+        Ok(())
     }
 
     /// Returns `true` if `address` is clear to transact, i.e. it is NOT on
     /// the denylist. This is the function other contracts should call via
     /// cross-contract invocation before proceeding with a transfer.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use denylist_gate::{DenylistGate, DenylistGateClient};
-    /// use soroban_sdk::{testutils::Address as _, Address, Env};
-    ///
-    /// let env = Env::default();
-    /// env.mock_all_auths();
-    /// let admin = Address::generate(&env);
-    /// let contract_id = env.register(DenylistGate, ());
-    /// let client = DenylistGateClient::new(&env, &contract_id);
-    /// client.initialize(&admin);
-    ///
-    /// let alice = Address::generate(&env);
-    /// assert!(client.check(&alice));
-    ///
-    /// client.add_to_denylist(&admin, &alice);
-    /// assert!(!client.check(&alice));
-    /// ```
+    /// **Not** affected by pause state — reads always succeed.
     pub fn check(env: Env, address: Address) -> bool {
         !env.storage()
             .persistent()
@@ -318,3 +385,6 @@ impl ComplianceCheck for DenylistGate {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod fuzz_test;
