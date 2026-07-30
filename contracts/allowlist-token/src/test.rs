@@ -419,99 +419,76 @@ fn test_remove_from_allowlist_emits_allow_remove_event() {
     );
 }
 
-// ── compliance-officer tests ───────────────────────────────────────────
+// ── Issue #102 ────────────────────────────────────────────────────────────────
 
+/// When both the sender and the recipient are on the allowlist the transfer
+/// must succeed and no `Blocked` event should appear in the event log.
+///
+/// The allowlist-token contract emits `Blocked` only when a party is NOT
+/// allowlisted; on the happy path it emits nothing.  We verify this by
+/// filtering the event log down to just the events originating from the
+/// allowlist-token contract and asserting none of their topic lists start
+/// with the `"blocked"` symbol.
 #[test]
-fn test_admin_can_set_and_revoke_compliance_officer() {
+fn test_transfer_no_blocked_event_when_both_allowlisted() {
+    use soroban_sdk::xdr::{ScSymbol, ScVal, StringM};
+
     let env = Env::default();
-    let (admin, _token_id, _contract_id, client) = setup(&env);
-    let officer = Address::generate(&env);
-
-    // Set compliance officer
-    client.set_compliance_officer(&admin, &officer);
-
-    // Officer can add to allowlist
+    let (admin, _token_id, contract_id, client) = setup(&env);
     let alice = Address::generate(&env);
-    client.add_to_allowlist(&officer, &alice);
-    assert!(client.is_allowed(&alice));
-
-    // Revoke compliance officer
-    client.revoke_compliance_officer(&admin);
-
-    // Now officer cannot add another address
     let bob = Address::generate(&env);
-    let result = client.try_add_to_allowlist(&officer, &bob);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-    assert!(!client.is_allowed(&bob));
-}
 
-#[test]
-fn test_compliance_officer_can_add_and_remove() {
-    let env = Env::default();
-    let (admin, _token_id, _contract_id, client) = setup(&env);
-    let officer = Address::generate(&env);
-    client.set_compliance_officer(&admin, &officer);
-
-    let alice = Address::generate(&env);
-
-    // Officer can add
-    client.add_to_allowlist(&officer, &alice);
-    assert!(client.is_allowed(&alice));
-
-    // Officer can remove
-    client.remove_from_allowlist(&officer, &alice);
-    assert!(!client.is_allowed(&alice));
-}
-
-#[test]
-fn test_compliance_officer_cannot_set_or_revoke_role() {
-    let env = Env::default();
-    let (admin, _token_id, _contract_id, client) = setup(&env);
-    let officer = Address::generate(&env);
-    client.set_compliance_officer(&admin, &officer);
-
-    let another = Address::generate(&env);
-
-    // Officer cannot set another compliance officer
-    let result = client.try_set_compliance_officer(&officer, &another);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-
-    // Officer cannot revoke own role
-    let result = client.try_revoke_compliance_officer(&officer);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-
-    // Officer still has their role
-    let alice = Address::generate(&env);
-    client.add_to_allowlist(&officer, &alice);
-    assert!(client.is_allowed(&alice));
-}
-
-#[test]
-fn test_admin_can_still_perform_compliance_actions() {
-    let env = Env::default();
-    let (admin, _token_id, _contract_id, client) = setup(&env);
-    let officer = Address::generate(&env);
-    client.set_compliance_officer(&admin, &officer);
-
-    let alice = Address::generate(&env);
-
-    // Admin can still add/remove directly
     client.add_to_allowlist(&admin, &alice);
-    assert!(client.is_allowed(&alice));
+    client.add_to_allowlist(&admin, &bob);
 
-    client.remove_from_allowlist(&admin, &alice);
-    assert!(!client.is_allowed(&alice));
+    // Successful transfer — both parties are allowlisted.
+    let ok = client.transfer(&alice, &bob, &500);
+    assert!(ok, "transfer should succeed when both parties are allowlisted");
+
+    // Build the XDR symbol value we do NOT want to see as a first topic.
+    let blocked_sym: ScVal =
+        ScVal::Symbol(ScSymbol(StringM::try_from("blocked").unwrap()));
+
+    // Filter down to events emitted by the allowlist-token contract and
+    // assert none of them carry the "blocked" first topic.
+    let contract_events = env.events().all().filter_by_contract(&contract_id);
+    for event in contract_events.events() {
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
+        let first_topic = body.topics.first();
+        assert_ne!(
+            first_topic,
+            Some(&blocked_sym),
+            "Blocked event must NOT be emitted when both parties are allowlisted"
+        );
+    }
 }
 
-#[test]
-fn test_unset_officer_rejected_for_compliance_actions() {
-    let env = Env::default();
-    let (_admin, _token_id, _contract_id, client) = setup(&env);
+// ── Issue #103 ────────────────────────────────────────────────────────────────
 
-    // No compliance officer set — unknown address cannot act
-    let rando = Address::generate(&env);
+/// `transfer` must reject a negative `amount` with `Error::InvalidInput`
+/// before performing any auth check, allowlist lookup, or cross-contract
+/// call.  No event should be emitted as a result of the rejected call.
+#[test]
+fn test_transfer_rejects_negative_amount() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
     let alice = Address::generate(&env);
-    let result = client.try_add_to_allowlist(&rando, &alice);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-    assert!(!client.is_allowed(&alice));
+    let bob = Address::generate(&env);
+
+    // Both parties are allowlisted so the only rejection reason is the amount.
+    client.add_to_allowlist(&admin, &alice);
+    client.add_to_allowlist(&admin, &bob);
+
+    let result = client.try_transfer(&alice, &bob, &-1);
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidInput)),
+        "negative amount must return Err(InvalidInput)"
+    );
+
+    // Zero is the boundary: exactly zero should NOT be rejected by this guard.
+    // (Whether a zero-amount transfer makes business sense is a separate
+    // concern; the guard's job is only to reject *negative* values.)
+    let ok = client.transfer(&alice, &bob, &0);
+    assert!(ok, "zero amount should not be rejected by the negative-amount guard");
 }

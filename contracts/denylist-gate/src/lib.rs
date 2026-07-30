@@ -85,7 +85,11 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NotAuthorized = 3,
-    Paused = 4,
+    /// Caller supplied an argument that is structurally invalid.
+    /// Discriminant 4 is reserved for this variant across all three
+    /// contracts so audit tooling can pattern-match on it without knowing
+    /// which contract it originated from.
+    InvalidInput = 4,
 }
 
 // ---------------------------------------------------------------------------

@@ -122,11 +122,11 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NotAuthorized = 3,
-    /// `allowed_codes` was empty. An empty allowlist means nothing can ever
-    /// pass, which is almost certainly a caller configuration mistake rather
-    /// than a legitimate "nothing is permitted" intent. Callers should either
-    /// supply at least one code or omit the jurisdiction check entirely.
-    EmptyAllowedCodes = 4,
+    /// Caller supplied an argument that is structurally invalid — e.g. an
+    /// empty or malformed jurisdiction code.  Discriminant 4 is reserved
+    /// for this variant across all three contracts so audit tooling can
+    /// pattern-match on it without knowing which contract it originated from.
+    InvalidInput = 4,
 }
 
 #[contract]
