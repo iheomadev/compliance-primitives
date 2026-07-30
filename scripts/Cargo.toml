@@ -1,0 +1,12 @@
+[package]
+name = "compliance-primitives-scripts"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "benchmark"
+path = "benchmark.rs"
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
