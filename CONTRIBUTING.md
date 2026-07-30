@@ -17,13 +17,20 @@ contribution are also tagged `good first issue`.
 4. **Add tests.** Every public function needs coverage for its happy path
    and at least one failure/auth case. New functionality without tests
    won't be merged.
-5. **Before submitting a PR, run:**
+5. **If you've changed any public function signature or interface-related
+   attribute on a contract, regenerate the docs interfaces:**
+   ```sh
+   ./scripts/regenerate-docs.sh
+   ```
+   This rebuilds all contracts to wasm and extracts each contract's Soroban
+   XDR interface spec into `docs/interfaces/`.  Commit the updated files.
+6. **Before submitting a PR, run:**
    ```sh
    cargo test --workspace
    cargo clippy --workspace --all-targets -- -D warnings
    ```
    Both must pass locally — the same checks run in CI on every PR.
-6. **Open a pull request** against `main`, referencing the issue it closes
+7. **Open a pull request** against `main`, referencing the issue it closes
    (e.g. `Closes #12`). Describe what changed and why.
 
 ## Picking up an issue
