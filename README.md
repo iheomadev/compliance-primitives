@@ -111,6 +111,13 @@ it's a thin wrapper you can deploy in front of an existing SEP-41 token —
 but even it delegates the real transfer to the underlying token contract
 rather than reimplementing token logic itself.
 
+## Migrating from hand-rolled compliance
+
+If you already have allowlist, denylist, or jurisdiction checks baked into
+your own token contract, see **[docs/MIGRATION.md](./docs/MIGRATION.md)** for
+a step-by-step guide to replacing them with these primitives — including
+mapping your existing checks, deployment & wiring, data backfill, and rollback.
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the fork → branch → PR flow.
