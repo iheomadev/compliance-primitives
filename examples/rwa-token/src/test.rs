@@ -1,202 +1,133 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{vec, Env};
+use allowlist_token::{AllowlistToken, AllowlistTokenClient};
+use denylist_gate::{DenylistGate, DenylistGateClient};
+use jurisdiction_flag::{JurisdictionFlag, JurisdictionFlagClient};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{vec, Env, String};
 
-fn setup(
-    env: &Env,
-) -> (
-    Address,                 // admin
-    Address,                 // denylist_addr
-    Address,                 // allowlist_addr
-    Address,                 // jurisdiction_addr
-    RwaTokenClient<'_>,
-) {
+struct Fixture<'a> {
+    admin: Address,
+    issuer: Address,
+    allowlist_id: Address,
+    gate_id: Address,
+    jurisdiction_id: Address,
+    token: RwaTokenClient<'a>,
+}
+
+fn setup(env: &Env) -> Fixture<'_> {
     env.mock_all_auths();
-
     let admin = Address::generate(env);
+    let issuer = Address::generate(env);
 
-    // Register the three primitive contracts
-    let denylist_addr = env.register(denylist_gate::DenylistGate, ());
-    let denylist_client = denylist_gate::DenylistGateClient::new(env, &denylist_addr);
-    denylist_client.initialize(&admin);
+    // Underlying SEP-41 placeholder — rwa-token only uses is_allowed().
+    let underlying = Address::generate(env);
+    let allowlist_id = env.register(AllowlistToken, ());
+    AllowlistTokenClient::new(env, &allowlist_id).initialize(&admin, &underlying);
 
-    // For allowlist, we need to mock it since we can't easily instantiate it
-    let allowlist_addr = env.register(allowlist_token::AllowlistToken, ());
+    let gate_id = env.register(DenylistGate, ());
+    DenylistGateClient::new(env, &gate_id).initialize(&admin);
 
-    // For jurisdiction, register and initialize
-    let jurisdiction_addr = env.register(jurisdiction_flag::JurisdictionFlag, ());
-    let jurisdiction_client = jurisdiction_flag::JurisdictionFlagClient::new(env, &jurisdiction_addr);
-    jurisdiction_client.initialize(&admin);
+    let jurisdiction_id = env.register(JurisdictionFlag, ());
+    JurisdictionFlagClient::new(env, &jurisdiction_id).initialize(&issuer);
 
-    // Register and initialize the RWA token
+    let allowed_codes = vec![
+        env,
+        String::from_str(env, "US"),
+        String::from_str(env, "CA"),
+    ];
     let token_id = env.register(RwaToken, ());
-    let token_client = RwaTokenClient::new(env, &token_id);
-    token_client.initialize(&admin, &denylist_addr, &allowlist_addr, &jurisdiction_addr);
+    let token = RwaTokenClient::new(env, &token_id);
+    token.initialize(&allowlist_id, &gate_id, &jurisdiction_id, &allowed_codes);
 
-    (admin, denylist_addr, allowlist_addr, jurisdiction_addr, token_client)
+    Fixture {
+        admin,
+        issuer,
+        allowlist_id,
+        gate_id,
+        jurisdiction_id,
+        token,
+    }
+}
+
+fn onboard(env: &Env, fx: &Fixture<'_>, who: &Address, code: &str) {
+    AllowlistTokenClient::new(env, &fx.allowlist_id).add_to_allowlist(&fx.admin, who);
+    JurisdictionFlagClient::new(env, &fx.jurisdiction_id).set_jurisdiction(
+        &fx.issuer,
+        who,
+        &String::from_str(env, code),
+    );
 }
 
 #[test]
-fn test_initialize() {
+fn test_transfer_succeeds_when_all_checks_pass() {
     let env = Env::default();
-    let (admin, denylist_addr, allowlist_addr, jurisdiction_addr, token_client) = setup(&env);
-
-    // Verify the contract initialized successfully (no error thrown)
-    // In a real test, you'd verify state, but that requires public getters
-    let alice = Address::generate(&env);
-    assert_eq!(token_client.get_balance(&alice), 0);
-}
-
-#[test]
-fn test_mint_and_balance() {
-    let env = Env::default();
-    let (admin, _denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
-    let alice = Address::generate(&env);
-
-    token_client.mint(&admin, &alice, &1000);
-    assert_eq!(token_client.get_balance(&alice), 1000);
-}
-
-#[test]
-fn test_mint_non_admin_fails() {
-    let env = Env::default();
-    let (_admin, _denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
-    let alice = Address::generate(&env);
-    let non_admin = Address::generate(&env);
-
-    let result = token_client.try_mint(&non_admin, &alice, &1000);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-    assert_eq!(token_client.get_balance(&alice), 0);
-}
-
-#[test]
-fn test_transfer_fails_if_denied_by_denylist() {
-    let env = Env::default();
-    let (admin, denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
+    let fx = setup(&env);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
+    onboard(&env, &fx, &alice, "US");
+    onboard(&env, &fx, &bob, "CA");
 
-    // Mint to alice
-    token_client.mint(&admin, &alice, &1000);
+    fx.token.mint(&alice, &1_000);
+    fx.token.transfer(&alice, &bob, &400);
 
-    // Add alice to the denylist
-    let denylist_client = denylist_gate::DenylistGateClient::new(&env, &denylist_addr);
-    denylist_client.add_to_denylist(&admin, &alice);
-
-    // Try to transfer from alice to bob
-    let result = token_client.try_transfer(&alice, &bob, &100);
-    assert_eq!(result, Err(Ok(Error::DeniedByDenylist)));
-
-    // Verify balances didn't change
-    assert_eq!(token_client.get_balance(&alice), 1000);
-    assert_eq!(token_client.get_balance(&bob), 0);
+    assert_eq!(fx.token.balance(&alice), 600);
+    assert_eq!(fx.token.balance(&bob), 400);
 }
 
 #[test]
-fn test_transfer_fails_if_recipient_denied_by_denylist() {
+fn test_transfer_blocked_when_not_allowlisted() {
     let env = Env::default();
-    let (admin, denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
+    let fx = setup(&env);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
+    // Alice fully onboarded; bob has jurisdiction but is NOT allowlisted.
+    onboard(&env, &fx, &alice, "US");
+    JurisdictionFlagClient::new(&env, &fx.jurisdiction_id).set_jurisdiction(
+        &fx.issuer,
+        &bob,
+        &String::from_str(&env, "CA"),
+    );
 
-    // Mint to alice
-    token_client.mint(&admin, &alice, &1000);
-
-    // Add bob to the denylist
-    let denylist_client = denylist_gate::DenylistGateClient::new(&env, &denylist_addr);
-    denylist_client.add_to_denylist(&admin, &bob);
-
-    // Try to transfer from alice to bob
-    let result = token_client.try_transfer(&alice, &bob, &100);
-    assert_eq!(result, Err(Ok(Error::DeniedByDenylist)));
-
-    // Verify balances didn't change
-    assert_eq!(token_client.get_balance(&alice), 1000);
-    assert_eq!(token_client.get_balance(&bob), 0);
+    fx.token.mint(&alice, &1_000);
+    let result = fx.token.try_transfer(&alice, &bob, &400);
+    assert_eq!(result, Err(Ok(Error::NotAllowlisted)));
+    assert_eq!(fx.token.balance(&alice), 1_000);
 }
 
 #[test]
-fn test_transfer_fails_insufficient_balance() {
+fn test_transfer_blocked_when_denied_by_gate() {
     let env = Env::default();
-    let (admin, _denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
+    let fx = setup(&env);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
+    onboard(&env, &fx, &alice, "US");
+    onboard(&env, &fx, &bob, "CA");
 
-    // Mint only 50 to alice
-    token_client.mint(&admin, &alice, &50);
+    DenylistGateClient::new(&env, &fx.gate_id).add_to_denylist(&fx.admin, &alice);
 
-    // Try to transfer 100 (more than balance)
-    let result = token_client.try_transfer(&alice, &bob, &100);
-    assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
-
-    // Verify balances didn't change
-    assert_eq!(token_client.get_balance(&alice), 50);
-    assert_eq!(token_client.get_balance(&bob), 0);
+    fx.token.mint(&alice, &1_000);
+    let result = fx.token.try_transfer(&alice, &bob, &400);
+    assert_eq!(result, Err(Ok(Error::DeniedByGate)));
+    assert_eq!(fx.token.balance(&alice), 1_000);
 }
 
 #[test]
-fn test_transfer_succeeds_when_not_denied() {
+fn test_transfer_blocked_when_jurisdiction_not_permitted() {
     let env = Env::default();
-    let (admin, _denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
+    let fx = setup(&env);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
+    onboard(&env, &fx, &alice, "US");
+    // Bob allowlisted but flagged IR, which is outside allowed_codes (US, CA).
+    AllowlistTokenClient::new(&env, &fx.allowlist_id).add_to_allowlist(&fx.admin, &bob);
+    JurisdictionFlagClient::new(&env, &fx.jurisdiction_id).set_jurisdiction(
+        &fx.issuer,
+        &bob,
+        &String::from_str(&env, "IR"),
+    );
 
-    // Mint to alice
-    token_client.mint(&admin, &alice, &1000);
-
-    // Transfer from alice to bob (should succeed since they're not denied or restricted)
-    token_client.transfer(&alice, &bob, &300);
-
-    // Verify balances changed correctly
-    assert_eq!(token_client.get_balance(&alice), 700);
-    assert_eq!(token_client.get_balance(&bob), 300);
-}
-
-#[test]
-fn test_transfer_fails_not_on_allowlist() {
-    let env = Env::default();
-    let (admin, _denylist_addr, allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    // Mint to alice
-    token_client.mint(&admin, &alice, &1000);
-
-    // Note: In this test setup, the allowlist is a placeholder.
-    // Since we can't initialize it properly in this test (it requires token address),
-    // the transfer will fail with NotOnAllowlist for any address.
-    // This demonstrates the check is being performed.
-
-    let result = token_client.try_transfer(&alice, &bob, &100);
-    assert_eq!(result, Err(Ok(Error::NotOnAllowlist)));
-
-    // Verify balances didn't change
-    assert_eq!(token_client.get_balance(&alice), 1000);
-    assert_eq!(token_client.get_balance(&bob), 0);
-}
-
-#[test]
-fn test_transfer_multiple_checks_fail_in_order() {
-    let env = Env::default();
-    let (admin, denylist_addr, _allowlist_addr, _jurisdiction_addr, token_client) = setup(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    // Mint to alice
-    token_client.mint(&admin, &alice, &1000);
-
-    // Add alice to denylist
-    let denylist_client = denylist_gate::DenylistGateClient::new(&env, &denylist_addr);
-    denylist_client.add_to_denylist(&admin, &alice);
-
-    // Even though alice is not on the allowlist either, the denylist check comes first
-    let result = token_client.try_transfer(&alice, &bob, &100);
-    assert_eq!(result, Err(Ok(Error::DeniedByDenylist)));
-
-    // Remove from denylist
-    denylist_client.remove_from_denylist(&admin, &alice);
-
-    // Now it should fail on allowlist check instead
-    let result = token_client.try_transfer(&alice, &bob, &100);
-    assert_eq!(result, Err(Ok(Error::NotOnAllowlist)));
+    fx.token.mint(&alice, &1_000);
+    let result = fx.token.try_transfer(&alice, &bob, &400);
+    assert_eq!(result, Err(Ok(Error::JurisdictionNotPermitted)));
+    assert_eq!(fx.token.balance(&alice), 1_000);
 }

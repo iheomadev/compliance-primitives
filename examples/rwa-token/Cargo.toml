@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Reference RWA token contract composing all three compliance primitives (allowlist, denylist, jurisdiction-flag)."
+description = "Reference RWA token composing allowlist, denylist-gate, and jurisdiction-flag checks."
 publish = false
 
 [lib]
