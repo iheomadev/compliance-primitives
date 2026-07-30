@@ -286,5 +286,17 @@ impl JurisdictionFlag {
     }
 }
 
+/// Implementation of the shared ComplianceCheck trait for jurisdiction-flag.
+/// Allows external contracts to call this contract through a unified interface.
+impl ComplianceCheck for JurisdictionFlag {
+    /// Returns true if the address has a jurisdiction code set (i.e., has been verified).
+    /// Note: This is a simplified version that checks for any jurisdiction being set,
+    /// not whether it's in a specific permitted list. Use `is_permitted_jurisdiction()`
+    /// for jurisdiction whitelist checks.
+    fn is_compliant(env: Env, address: Address) -> bool {
+        JurisdictionFlag::get_jurisdiction(env, address).is_some()
+    }
+}
+
 #[cfg(test)]
 mod test;

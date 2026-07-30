@@ -121,14 +121,17 @@ impl AllowlistToken {
         Ok(())
     }
 
-    /// Configure the ed25519 public key that may authorize delegated admin
-    /// actions without the admin account itself needing to submit the
-    /// transaction. The direct-auth path remains unchanged and still uses
-    /// `admin.require_auth()`.
-    pub fn set_delegated_admin_key(env: Env, admin: Address, pubkey: BytesN<32>) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::DelegatedAdminPubKey, &pubkey);
-        Ok(())
+    /// Returns metadata about this contract instance, including version and admin address.
+    pub fn metadata(env: Env) -> Result<Metadata, Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        Ok(Metadata {
+            version: String::from_slice(&env, env!("CARGO_PKG_VERSION")),
+            admin,
+        })
     }
 
     /// Add `address` to the allowlist. Admin-only.
@@ -379,6 +382,16 @@ impl AllowlistToken {
         let expiry_str = alloc::format!("{expiry}");
         message.append(&Bytes::from_slice(env, expiry_str.as_bytes()));
         message
+    }
+}
+
+/// Implementation of the shared ComplianceCheck trait for allowlist-token.
+/// Allows external contracts to call this contract through a unified interface.
+impl ComplianceCheck for AllowlistToken {
+    /// Returns true if the address is on the allowlist (i.e., is compliant).
+    /// Equivalent to the `is_allowed()` function.
+    fn is_compliant(env: Env, address: Address) -> bool {
+        AllowlistToken::is_allowed(env, address)
     }
 }
 
