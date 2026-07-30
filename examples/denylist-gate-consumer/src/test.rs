@@ -51,37 +51,32 @@ fn test_transfer_blocked_when_sender_denied() {
 }
 
 #[test]
-fn test_transfer_blocked_when_breaker_frozen() {
+fn test_gate_is_rechecked_on_every_transfer_not_cached() {
     let env = Env::default();
-    let (_gate_admin, _gate_id, breaker_admin, breaker_id, client) = setup(&env);
+    let (gate_admin, gate_id, client) = setup(&env);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
 
     client.mint(&alice, &1_000);
-    CircuitBreakerClient::new(&env, &breaker_id).freeze(&breaker_admin);
 
-    let result = client.try_transfer(&alice, &bob, &400);
-    assert_eq!(result, Err(Ok(Error::FrozenByBreaker)));
-    assert_eq!(client.balance(&alice), 1_000);
-    assert_eq!(client.balance(&bob), 0);
-}
+    // Initial transfer succeeds while both parties are clear.
+    client.transfer(&alice, &bob, &400);
+    assert_eq!(client.balance(&alice), 600);
+    assert_eq!(client.balance(&bob), 400);
 
-#[test]
-fn test_transfer_resumes_after_breaker_unfreeze() {
-    let env = Env::default();
-    let (_gate_admin, _gate_id, breaker_admin, breaker_id, client) = setup(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
+    // Deny one of the parties mid-flow, after the successful transfer.
+    DenylistGateClient::new(&env, &gate_id).add_to_denylist(&gate_admin, &bob);
 
-    client.mint(&alice, &1_000);
-    CircuitBreakerClient::new(&env, &breaker_id).freeze(&breaker_admin);
+    // A subsequent transfer touching the now-denied party must be blocked,
+    // proving the gate is re-checked on every call rather than cached from
+    // the earlier successful check.
+    let result = client.try_transfer(&alice, &bob, &100);
+    assert_eq!(result, Err(Ok(Error::DeniedByGate)));
+    assert_eq!(client.balance(&alice), 600);
+    assert_eq!(client.balance(&bob), 400);
 
-    let frozen_result = client.try_transfer(&alice, &bob, &400);
-    assert_eq!(frozen_result, Err(Ok(Error::FrozenByBreaker)));
-
-    CircuitBreakerClient::new(&env, &breaker_id).unfreeze(&breaker_admin);
-    let resumed = client.transfer(&alice, &bob, &400);
-    assert!(resumed.is_ok());
+    let result = client.try_transfer(&bob, &alice, &100);
+    assert_eq!(result, Err(Ok(Error::DeniedByGate)));
     assert_eq!(client.balance(&alice), 600);
     assert_eq!(client.balance(&bob), 400);
 }

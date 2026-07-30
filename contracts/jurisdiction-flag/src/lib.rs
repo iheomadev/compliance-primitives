@@ -109,6 +109,12 @@ pub struct Unpaused {
     pub issuer: Address,
 }
 
+#[contractevent]
+pub struct JurisdictionRemoved {
+    #[topic]
+    pub address: Address,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -198,6 +204,20 @@ impl JurisdictionFlag {
         env.storage().persistent().set(&key, &code);
         Self::extend_jurisdiction_ttl(&env, &key);
         JurisdictionSet { address, code }.publish(&env);
+        Ok(())
+    }
+
+    /// Clear the jurisdiction code attached to `address`. Issuer-only.
+    pub fn remove_jurisdiction(
+        env: Env,
+        issuer: Address,
+        address: Address,
+    ) -> Result<(), Error> {
+        Self::require_issuer(&env, &issuer)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Jurisdiction(address.clone()));
+        JurisdictionRemoved { address }.publish(&env);
         Ok(())
     }
 
