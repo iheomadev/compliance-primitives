@@ -26,17 +26,11 @@
 //! appears in `allowed_codes`. An address with no codes is never permitted.
 //!
 //! **Callers**: only the configured `issuer` address may call
-//! `set_jurisdiction` (or `set_jurisdiction_until`). Any contract or
+//! `set_jurisdiction` / `remove_jurisdiction_multiple`. Any contract or
 //! off-chain client can read a flag via `get_jurisdiction`, and contracts
 //! enforcing a jurisdiction allowlist can call
 //! `is_permitted_jurisdiction(address, allowed_codes)` directly as part of
 //! their own compliance checks.
-//!
-//! **Time-bound flags**: `set_jurisdiction_until` stores the flag with a
-//! `valid_until` ledger sequence number. Once `env.ledger().sequence()`
-//! exceeds that value the flag is treated as unset (returns `None` / `false`).
-//! `set_jurisdiction` sets `valid_until: None` (never expires) and is
-//! fully backward-compatible.
 //!
 //! **Composition**: designed to be called into from another contract's
 //! `transfer` or similar gating logic — the same pattern `denylist-gate`
@@ -207,17 +201,28 @@ impl JurisdictionFlag {
         Ok(())
     }
 
-    /// Clear the jurisdiction code attached to `address`. Issuer-only.
-    pub fn remove_jurisdiction(
+    /// Remove stored jurisdiction codes for each address in `addresses`.
+    ///
+    /// Authorizes `issuer` once via [`Self::require_issuer`], then clears
+    /// `DataKey::Jurisdiction` for every entry. Addresses that never had a
+    /// code set are skipped (no-op per address). An empty `addresses` vec is
+    /// also a no-op after the auth check.
+    ///
+    /// **Batch size**: no `MAX_BATCH_SIZE` guard is applied here yet. Issue
+    /// #73 will introduce a shared cap and `Error::BatchTooLarge` across all
+    /// batch entry points (#69/#70/#71 and this function) so the limit lands
+    /// consistently rather than being bolted on per-function.
+    pub fn remove_jurisdiction_multiple(
         env: Env,
         issuer: Address,
-        address: Address,
+        addresses: Vec<Address>,
     ) -> Result<(), Error> {
         Self::require_issuer(&env, &issuer)?;
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Jurisdiction(address.clone()));
-        JurisdictionRemoved { address }.publish(&env);
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Jurisdiction(address));
+        }
         Ok(())
     }
 
@@ -317,3 +322,6 @@ impl ComplianceCheck for JurisdictionFlag {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod fuzz;

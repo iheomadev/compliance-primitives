@@ -33,12 +33,19 @@
 
 extern crate alloc;
 
-use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Bytes,
-    BytesN, Env, Symbol,
-};
+/// Extend a persistent allowlist entry when its remaining TTL drops below
+/// this many ledgers (~7 days at ~5s/ledger on mainnet).
+///
+/// Chosen so an idle KYC'd address still gets renewed well before archival,
+/// without paying for an extension on every recent write.
+pub(crate) const ALLOWED_TTL_THRESHOLD: u32 = 120_960; // ~7 days
 
-/// Storage keys for this contract's state.
+/// Target remaining TTL after extension (~90 days at ~5s/ledger).
+///
+/// Long enough that an issuer can go weeks without touching an entry and
+/// still avoid archival, while staying under typical network `max_entry_ttl`.
+pub(crate) const ALLOWED_TTL_EXTEND_TO: u32 = 1_555_200; // ~90 days
+
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
@@ -135,74 +142,28 @@ impl AllowlistToken {
     }
 
     /// Add `address` to the allowlist. Admin-only.
+    ///
+    /// After writing the persistent entry, extends its TTL to
+    /// [`ALLOWED_TTL_EXTEND_TO`] when the remaining TTL is below
+    /// [`ALLOWED_TTL_THRESHOLD`].
+    ///
+    /// **TTL tradeoff (write-only vs read-triggered):** extension runs only
+    /// on allowlist writes here, not on `is_allowed` / `transfer` reads.
+    /// Write-only keeps transfer paths cheaper (no TTL bump fee on every
+    /// gated transfer) and matches the issuer's mutation cadence. The cost
+    /// is that a never-mutated entry can still approach archival if nothing
+    /// re-adds it for ~90 days — issuers that need read-side keep-alive
+    /// should bump TTL from an off-chain renewal job or revisit adding
+    /// read-triggered `extend_ttl` later.
     pub fn add_to_allowlist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
-        env.storage()
-            .instance()
-            .remove(&DataKey::ComplianceOfficer);
-        Ok(())
-    }
-
-    /// Add `address` to the allowlist. Admin or compliance-officer.
-    pub fn add_to_allowlist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
-        Self::require_compliance_authority(&env, &admin)?;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Allowed(address.clone()), &true);
-        AllowAdd { address }.publish(&env);
-        Ok(())
-    }
-
-    /// Add `address` to the allowlist using a signed off-chain authorization
-    /// payload. This path verifies a nonce and expiry before applying the
-    /// allowlist change, so a relayer can submit it on behalf of the admin.
-    pub fn add_to_allowlist_delegated(
-        env: Env,
-        admin: Address,
-        address: Address,
-        nonce: u64,
-        expiry: u64,
-        signature: BytesN<64>,
-    ) -> Result<(), Error> {
-        Self::require_configured_admin(&env, &admin)?;
-
-        let now = env.ledger().timestamp();
-        if expiry <= now {
-            return Err(Error::ExpiredSignature);
-        }
-
-        let last_nonce: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DelegatedNonce(admin.clone()))
-            .unwrap_or(0);
-        if nonce <= last_nonce {
-            return Err(Error::InvalidNonce);
-        }
-
-        let pubkey: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&DataKey::DelegatedAdminPubKey)
-            .ok_or(Error::DelegationNotConfigured)?;
-        let action = Symbol::new(&env, "add_to_allowlist");
-        let message = Self::delegated_action_message(&env, &address, &action, nonce, expiry);
-        match soroban_sdk::env::internal::Env::verify_sig_ed25519(
-            &env,
-            pubkey.to_object(),
-            message.to_object(),
-            signature.to_object(),
-        ) {
-            Ok(_) => {}
-            Err(_) => return Err(Error::NotAuthorized),
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::DelegatedNonce(admin.clone()), &nonce);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Allowed(address.clone()), &true);
+        let key = DataKey::Allowed(address.clone());
+        env.storage().persistent().set(&key, &true);
+        env.storage().persistent().extend_ttl(
+            &key,
+            ALLOWED_TTL_THRESHOLD,
+            ALLOWED_TTL_EXTEND_TO,
+        );
         AllowAdd { address }.publish(&env);
         Ok(())
     }

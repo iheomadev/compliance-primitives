@@ -17,7 +17,7 @@ compliance-pausable = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-jurisdiction-flag = { path = "../../contracts/jurisdiction-flag", features = ["testutils"] }
+proptest = "1"
 
 [features]
 testutils = ["soroban-sdk/testutils", "compliance-pausable/testutils"]
