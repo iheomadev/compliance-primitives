@@ -111,6 +111,12 @@ it's a thin wrapper you can deploy in front of an existing SEP-41 token —
 but even it delegates the real transfer to the underlying token contract
 rather than reimplementing token logic itself.
 
+## Choosing which primitives to compose
+
+With nine contracts now available, the decision of which primitives to use depends on your use case.
+See **[docs/PRIMITIVE_SELECTION_GUIDE.md](./docs/PRIMITIVE_SELECTION_GUIDE.md)** for profiles
+of common RWA and stablecoin use cases, and which primitive combinations fit each.
+
 ## Migrating from hand-rolled compliance
 
 If you already have allowlist, denylist, or jurisdiction checks baked into
@@ -120,7 +126,8 @@ mapping your existing checks, deployment & wiring, data backfill, and rollback.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the fork → branch → PR flow.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the fork → branch → PR flow,
+and [GOVERNANCE.md](./GOVERNANCE.md) for how issues are triaged and labeled.
 This repo is part of the **Drips Wave Stellar Program**, and issues are
 labeled by complexity (`complexity: trivial`, `complexity: medium`,
 `complexity: high`) so you can find something that matches how deep you

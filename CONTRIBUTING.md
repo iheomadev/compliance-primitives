@@ -6,6 +6,9 @@ Wave Stellar Program**, and issues are labeled by complexity
 pick something that matches how deep you want to go. Issues good for a first
 contribution are also tagged `good first issue`.
 
+For details on how issues are triaged, labeled, and prioritized, see
+[GOVERNANCE.md](./GOVERNANCE.md).
+
 ## Workflow
 
 1. **Fork** the repository and clone your fork.
