@@ -6,6 +6,9 @@ Wave Stellar Program**, and issues are labeled by complexity
 pick something that matches how deep you want to go. Issues good for a first
 contribution are also tagged `good first issue`.
 
+For details on how issues are triaged, labeled, and prioritized, see
+[GOVERNANCE.md](./GOVERNANCE.md).
+
 ## Workflow
 
 1. **Fork** the repository and clone your fork.
@@ -17,14 +20,45 @@ contribution are also tagged `good first issue`.
 4. **Add tests.** Every public function needs coverage for its happy path
    and at least one failure/auth case. New functionality without tests
    won't be merged.
-5. **Before submitting a PR, run:**
+5. **If you've changed any public function signature or interface-related
+   attribute on a contract, regenerate the docs interfaces:**
    ```sh
-   cargo test --workspace
-   cargo clippy --workspace --all-targets -- -D warnings
+   ./scripts/regenerate-docs.sh
+   ```
+   This rebuilds all contracts to wasm and extracts each contract's Soroban
+   XDR interface spec into `docs/interfaces/`.  Commit the updated files.
+6. **Before submitting a PR, run:**
+   ```sh
+   make test
+   make lint
    ```
    Both must pass locally — the same checks run in CI on every PR.
-6. **Open a pull request** against `main`, referencing the issue it closes
+7. **Open a pull request** against `main`, referencing the issue it closes
    (e.g. `Closes #12`). Describe what changed and why.
+
+## Complexity labels and expected PR size
+
+The complexity label on an issue is also a signal for how big the resulting
+PR should be. Before you start, gut-check your planned change against the
+issue's label:
+
+- **`complexity: trivial`** — typically a single file, or a small
+  documentation/test addition. No new public API surface. Example: adding an
+  issue template, or a single focused unit test like the one requested in
+  this same batch (`check()` returns true immediately after
+  `remove_from_denylist`).
+- **`complexity: medium`** — typically adds one new public function, or a
+  new test category, to a single contract. Example: adding a `get_admin()`
+  view function to `allowlist-token`, including happy-path and
+  not-initialized test coverage.
+- **`complexity: high`** — typically involves a design or threat-model
+  writeup, changes that span multiple contracts, or new tooling/CI. Example:
+  introducing a new cross-contract composition pattern or a new primitive
+  crate.
+
+If your planned PR looks a lot bigger (or smaller) than the label suggests,
+that's worth flagging in the issue before you start — the label may be
+wrong, or the issue may need to be split.
 
 ## Picking up an issue
 

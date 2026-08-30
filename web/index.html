@@ -1,0 +1,169 @@
+<title>compliance-primitives — on-chain compliance for Stellar</title>
+<meta name="description" content="On-chain compliance primitives for Stellar: allowlist/denylist token gating and jurisdiction checks for RWA and stablecoin issuers, built on Soroban.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="styles.css">
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">compliance-primitives</a>
+    <div class="nav-links">
+      <a href="#contracts">Contracts</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#quick-start">Quick start</a>
+      <a href="https://github.com/stellar-compliance-kit/compliance-primitives">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <span class="badge">Soroban &middot; Stellar</span>
+    <h1>On-chain compliance primitives for Stellar</h1>
+    <p class="lede">
+      Allowlist/denylist token gating and jurisdiction checks for RWA and
+      stablecoin issuers &mdash; a small set of standardized, auditable,
+      independently testable Soroban contracts, so issuers stop hand-rolling
+      compliance logic inside their own token contracts.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/stellar-compliance-kit/compliance-primitives">View on GitHub</a>
+      <a class="btn btn-secondary" href="#quick-start">Quick start</a>
+    </div>
+  </div>
+</header>
+
+<section id="problem">
+  <div class="wrap">
+    <h2>The problem</h2>
+    <p>
+      RWA and stablecoin issuers building on Stellar/Soroban all end up needing
+      the same handful of compliance gates &mdash; allowlists, denylists,
+      jurisdiction restrictions &mdash; before they can legally let a token
+      move. Today every issuer hand-rolls this logic inside their own token
+      contract, which means more audit surface, more chances for a subtle bug
+      to become a compliance incident, and no shared, reviewed reference to
+      build on.
+    </p>
+  </div>
+</section>
+
+<section id="contracts">
+  <div class="wrap">
+    <h2>Three focused contracts</h2>
+    <p>Each does one job, and each is independently deployable and testable.</p>
+    <div class="cards">
+      <div class="card">
+        <h3>allowlist-token</h3>
+        <p>
+          A token wrapper that only permits transfers between two addresses
+          that are both present on an on-chain allowlist. Admin-managed;
+          forwards cleared transfers to an underlying SEP-41 token contract.
+        </p>
+        <span class="tag">admin-managed</span>
+        <span class="tag">wraps SEP-41</span>
+        <div class="fns">
+          <code>add_to_allowlist(admin, address)</code>
+          <code>is_allowed(address) -&gt; bool</code>
+          <code>transfer(from, to, amount) -&gt; bool</code>
+        </div>
+      </div>
+      <div class="card">
+        <h3>denylist-gate</h3>
+        <p>
+          A standalone denylist other contracts call via cross-contract
+          invocation before executing a transfer. Not a token itself &mdash;
+          meant to be composed into one.
+        </p>
+        <span class="tag">composable</span>
+        <span class="tag">cross-contract</span>
+        <div class="fns">
+          <code>add_to_denylist(admin, address)</code>
+          <code>check(address) -&gt; bool</code>
+        </div>
+      </div>
+      <div class="card">
+        <h3>jurisdiction-flag</h3>
+        <p>
+          Attaches an issuer-controlled jurisdiction code (e.g. an ISO
+          country code) to an address, with a helper other contracts can
+          call to check an address against a permitted-jurisdictions list.
+        </p>
+        <span class="tag">issuer-controlled</span>
+        <span class="tag">ISO codes</span>
+        <div class="fns">
+          <code>set_jurisdiction(issuer, address, code)</code>
+          <code>is_permitted_jurisdiction(address, allowed_codes) -&gt; bool</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="wrap">
+    <h2>Building blocks, not a product</h2>
+    <p>
+      These contracts are meant to be composed into a real token or RWA
+      wrapper via cross-contract calls &mdash; for example, a token's
+      <code>transfer</code> calling <code>denylist-gate.check(address)</code>
+      before moving funds, or checking
+      <code>jurisdiction-flag.is_permitted_jurisdiction(...)</code> before
+      permitting a transaction.
+      <code>allowlist-token</code> is the one exception: a thin wrapper you
+      deploy in front of an existing SEP-41 token, which still delegates the
+      real transfer to the underlying token contract.
+    </p>
+    <div class="flow">
+      <pre>issuer's token contract
+  transfer(from, to, amount)
+    &rarr; denylist-gate.check(from)         (cross-contract call)
+    &rarr; denylist-gate.check(to)
+    &rarr; jurisdiction-flag.is_permitted_jurisdiction(to, allowed)
+    &rarr; proceed with transfer, or reject</pre>
+    </div>
+    <p>
+      See <a href="https://github.com/stellar-compliance-kit/compliance-primitives/tree/main/examples/denylist-gate-consumer"><code>/examples/denylist-gate-consumer</code></a>
+      for a minimal reference token contract showing this pattern end to end.
+    </p>
+  </div>
+</section>
+
+<section id="quick-start">
+  <div class="wrap">
+    <h2>Quick start</h2>
+    <pre class="code"><span class="comment"># Clone</span>
+git clone https://github.com/stellar-compliance-kit/compliance-primitives.git
+cd compliance-primitives
+
+<span class="comment"># Run the full test suite (all three contracts + example)</span>
+cargo test --workspace
+
+<span class="comment"># Lint</span>
+cargo clippy --workspace --all-targets -- -D warnings
+
+<span class="comment"># Build a contract to wasm (requires the wasm32v1-none target:
+# rustup target add wasm32v1-none)</span>
+stellar contract build
+
+<span class="comment"># Deploy a built contract to testnet, e.g. denylist-gate</span>
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/denylist_gate.wasm \
+  --source &lt;your-testnet-identity&gt; \
+  --network testnet</pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <span>MIT License &middot; part of the Drips Wave Stellar Program</span>
+      <span>
+        <a href="https://github.com/stellar-compliance-kit/compliance-primitives">GitHub</a>
+        &middot;
+        <a href="https://github.com/stellar-compliance-kit/compliance-primitives/blob/main/CONTRIBUTING.md">Contributing</a>
+        &middot;
+        <a href="https://github.com/stellar-compliance-kit/compliance-primitives/actions/workflows/ci.yml">CI</a>
+      </span>
+    </div>
+  </div>
+</footer>

@@ -1,6 +1,11 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{contract, contractimpl, symbol_short, vec, Env, IntoVal, Map, Symbol, Val};
+use ed25519_dalek::SigningKey;
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
+use soroban_sdk::testutils::ed25519::Sign;
+use soroban_sdk::{contract, contractimpl, symbol_short, vec, Bytes, BytesN, Env, IntoVal, Map, Symbol, Val};
+use std::path::{Path, PathBuf};
+
+// ─── MockToken ───────────────────────────────────────────────────────────────
 
 /// A minimal token double used only by these tests, so `allowlist-token`'s
 /// unit tests don't depend on any particular real SEP-41 implementation.
@@ -11,15 +16,15 @@ struct MockToken;
 impl MockToken {
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, "last"), &(from, to, amount));
+        env.storage().instance().set(&Symbol::new(&env, "last"), &(from, to, amount));
     }
 
     pub fn last_transfer(env: Env) -> Option<(Address, Address, i128)> {
         env.storage().instance().get(&Symbol::new(&env, "last"))
     }
 }
+
+// ─── Setup helper ────────────────────────────────────────────────────────────
 
 fn setup(env: &Env) -> (Address, Address, Address, AllowlistTokenClient<'_>) {
     env.mock_all_auths();
@@ -30,6 +35,8 @@ fn setup(env: &Env) -> (Address, Address, Address, AllowlistTokenClient<'_>) {
     client.initialize(&admin, &token_id);
     (admin, token_id, contract_id, client)
 }
+
+// ─── Existing unit tests ──────────────────────────────────────────────────────
 
 #[test]
 fn test_initialize_and_allowlist_roundtrip() {
@@ -63,6 +70,27 @@ fn test_transfer_forwards_to_underlying_token_when_both_allowlisted() {
 }
 
 #[test]
+fn test_budget_regression_allowlist_transfer() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    client.add_to_allowlist(&admin, &alice);
+    client.add_to_allowlist(&admin, &bob);
+
+    let mut budget = env.cost_estimate().budget();
+    budget.reset_default();
+    let ok = client.transfer(&alice, &bob, &500);
+    assert!(ok);
+
+    let measured = (budget.cpu_instruction_cost(), budget.memory_bytes_cost());
+    let baseline_path = baseline_path_for_manifest_dir(PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()));
+    let baseline = read_baseline(&baseline_path, "allowlist-token.transfer");
+    assert_budget_within_threshold(measured, baseline, "allowlist-token transfer");
+}
+
+#[test]
 fn test_transfer_blocked_when_recipient_not_allowlisted() {
     let env = Env::default();
     let (admin, _token_id, contract_id, client) = setup(&env);
@@ -80,12 +108,14 @@ fn test_transfer_blocked_when_recipient_not_allowlisted() {
             &env,
             (
                 contract_id.clone(),
+                (Symbol::new(&env, "allow_add"), alice.clone()).into_val(&env),
+                Map::<Symbol, Val>::new(&env).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (symbol_short!("blocked"), alice.clone(), bob.clone()).into_val(&env),
-                Map::<Symbol, Val>::from_array(
-                    &env,
-                    [(symbol_short!("amount"), 500i128.into_val(&env))]
-                )
-                .into_val(&env),
+                Map::<Symbol, Val>::from_array(&env, [(symbol_short!("amount"), 500i128.into_val(&env))])
+                    .into_val(&env),
             ),
         ]
     );
@@ -123,6 +153,95 @@ fn test_non_admin_allowlist_mutations_rejected_end_to_end() {
 }
 
 #[test]
+fn test_delegated_add_to_allowlist_succeeds() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let signing_key = SigningKey::from_bytes(&[
+        0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ]);
+    let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    client.set_delegated_admin_key(&admin, &pubkey);
+
+    let expiry = env.ledger().timestamp() + 60;
+    let signature = sign_delegated_action(&env, &signing_key, &alice, 1, expiry);
+
+    client.add_to_allowlist_delegated(&admin, &alice, &1u64, &expiry, &signature);
+    assert!(client.is_allowed(&alice));
+}
+
+#[test]
+fn test_delegated_add_to_allowlist_rejects_replay() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let signing_key = SigningKey::from_bytes(&[
+        0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ]);
+    let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    client.set_delegated_admin_key(&admin, &pubkey);
+
+    let expiry = env.ledger().timestamp() + 60;
+    let signature = sign_delegated_action(&env, &signing_key, &alice, 1, expiry);
+
+    client.add_to_allowlist_delegated(&admin, &alice, &1u64, &expiry, &signature);
+    let replay = client.try_add_to_allowlist_delegated(&admin, &alice, &1u64, &expiry, &signature);
+    assert_eq!(replay, Err(Ok(Error::InvalidNonce)));
+    assert!(client.is_allowed(&alice));
+}
+
+#[test]
+fn test_delegated_add_to_allowlist_rejects_expired_signature() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let signing_key = SigningKey::from_bytes(&[
+        0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ]);
+    let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    client.set_delegated_admin_key(&admin, &pubkey);
+
+    env.ledger().set_timestamp(100);
+    let expiry = 99u64;
+    let signature = sign_delegated_action(&env, &signing_key, &alice, 1, expiry);
+
+    let result = client.try_add_to_allowlist_delegated(&admin, &alice, &1u64, &expiry, &signature);
+    assert_eq!(result, Err(Ok(Error::ExpiredSignature)));
+    assert!(!client.is_allowed(&alice));
+}
+
+#[test]
+fn test_delegated_add_to_allowlist_rejects_non_admin_key() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+    let signing_key = SigningKey::from_bytes(&[
+        0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ]);
+    let attacker_key = SigningKey::from_bytes(&[
+        32u8, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+        54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+    ]);
+    let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    client.set_delegated_admin_key(&admin, &pubkey);
+
+    let expiry = env.ledger().timestamp() + 60;
+    let signature = sign_delegated_action(&env, &attacker_key, &alice, 1, expiry);
+
+    let result = client.try_add_to_allowlist_delegated(&admin, &alice, &1u64, &expiry, &signature);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert!(!client.is_allowed(&alice));
+}
+
+#[test]
 fn test_remove_from_allowlist_never_added_is_noop() {
     let env = Env::default();
     let (admin, _token_id, contract_id, client) = setup(&env);
@@ -154,6 +273,24 @@ fn test_is_allowed_false_before_initialize() {
     let alice = Address::generate(&env);
 
     assert!(!client.is_allowed(&alice));
+}
+
+#[test]
+fn test_get_admin_returns_initialized_admin() {
+    let env = Env::default();
+    let (admin, _token_id, _contract_id, client) = setup(&env);
+
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_get_admin_fails_before_initialize() {
+    let env = Env::default();
+    let contract_id = env.register(AllowlistToken, ());
+    let client = AllowlistTokenClient::new(&env, &contract_id);
+
+    let result = client.try_get_admin();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
@@ -200,9 +337,142 @@ fn test_remove_from_allowlist_emits_allow_remove_event() {
             &env,
             (
                 contract_id.clone(),
+                (Symbol::new(&env, "allow_add"), alice.clone()).into_val(&env),
+                Map::<Symbol, Val>::new(&env).into_val(&env),
+            ),
+            (
+                contract_id.clone(),
                 (Symbol::new(&env, "allow_remove"), alice.clone()).into_val(&env),
                 Map::<Symbol, Val>::new(&env).into_val(&env),
             ),
         ]
     );
+}
+
+#[test]
+fn test_add_to_allowlist_extends_persistent_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    use soroban_sdk::testutils::Ledger;
+
+    let env = Env::default();
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100_000;
+        li.min_persistent_entry_ttl = 500;
+        li.max_entry_ttl = 6_311_520;
+    });
+
+    let (admin, _token_id, contract_id, client) = setup(&env);
+    let alice = Address::generate(&env);
+
+    client.add_to_allowlist(&admin, &alice);
+
+    env.as_contract(&contract_id, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Allowed(alice.clone()));
+        assert_eq!(
+            ttl, ALLOWED_TTL_EXTEND_TO,
+            "fresh allowlist write should bump TTL to ALLOWED_TTL_EXTEND_TO"
+        );
+    });
+
+    // Advance far enough that remaining TTL falls below the threshold, then
+    // re-add and confirm extension runs again.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += ALLOWED_TTL_EXTEND_TO - ALLOWED_TTL_THRESHOLD + 1;
+    });
+    env.as_contract(&contract_id, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Allowed(alice.clone()));
+        assert!(
+            ttl < ALLOWED_TTL_THRESHOLD,
+            "TTL should be below threshold after ledger bump, got {ttl}"
+        );
+    });
+
+    client.add_to_allowlist(&admin, &alice);
+    env.as_contract(&contract_id, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Allowed(alice.clone()));
+        assert_eq!(ttl, ALLOWED_TTL_EXTEND_TO);
+    });
+}
+
+/// Property: after any sequence of add/remove on a fixed address pool,
+/// `is_allowed(addr)` matches whether the last op touching `addr` was an add.
+#[test]
+fn prop_allowlist_add_remove_last_write_wins() {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Add(usize),
+        Remove(usize),
+    }
+
+    let mut runner = TestRunner::new(Config {
+        cases: 64,
+        max_shrink_iters: 100,
+        ..Config::default()
+    });
+
+    runner
+        .run(
+            &(1usize..32).prop_flat_map(|len| {
+                proptest::collection::vec(
+                    (0usize..4).prop_flat_map(|addr_i| {
+                        proptest::bool::ANY.prop_map(move |is_add| {
+                            if is_add {
+                                Op::Add(addr_i)
+                            } else {
+                                Op::Remove(addr_i)
+                            }
+                        })
+                    }),
+                    len,
+                )
+            }),
+            |ops| {
+                let env = Env::default();
+                let (admin, _token_id, _contract_id, client) = setup(&env);
+                let addresses: [Address; 4] = [
+                    Address::generate(&env),
+                    Address::generate(&env),
+                    Address::generate(&env),
+                    Address::generate(&env),
+                ];
+                let mut model = [false; 4];
+
+                for op in &ops {
+                    match *op {
+                        Op::Add(i) => {
+                            client.add_to_allowlist(&admin, &addresses[i]);
+                            model[i] = true;
+                        }
+                        Op::Remove(i) => {
+                            client.remove_from_allowlist(&admin, &addresses[i]);
+                            model[i] = false;
+                        }
+                    }
+                }
+
+                for (i, address) in addresses.iter().enumerate() {
+                    prop_assert_eq!(
+                        client.is_allowed(address),
+                        model[i],
+                        "addr {} mismatch after {:?}",
+                        i,
+                        ops
+                    );
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
 }
