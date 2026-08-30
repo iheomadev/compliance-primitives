@@ -206,3 +206,63 @@ fn test_remove_from_allowlist_emits_allow_remove_event() {
         ]
     );
 }
+
+// ─── Integration: multisig-admin as admin of allowlist-token ────────────────
+
+/// Sets `multisig-admin` as the admin of `allowlist-token` and confirms that
+/// `add_to_allowlist` is gated by the multisig's approval threshold:
+/// - one signer's proposal alone does not add the address, and
+/// - once the threshold is met the address can be added as expected.
+#[test]
+fn test_multisig_admin_gates_allowlist() {
+    use multisig_admin::{MultisigAdmin, MultisigAdminClient};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // --- set up a 2-of-3 multisig ---
+    let signer_a = Address::generate(&env);
+    let signer_b = Address::generate(&env);
+    let signer_c = Address::generate(&env);
+    let multisig_id = env.register(MultisigAdmin, ());
+    let multisig = MultisigAdminClient::new(&env, &multisig_id);
+    multisig.initialize(
+        &soroban_sdk::vec![&env, signer_a.clone(), signer_b.clone(), signer_c.clone()],
+        &2,
+    );
+
+    // --- deploy allowlist-token with multisig as admin ---
+    let token_id = env.register(MockToken, ());
+    let contract_id = env.register(AllowlistToken, ());
+    let client = AllowlistTokenClient::new(&env, &contract_id);
+    // Initialize with multisig_id as admin
+    client.initialize(&multisig_id, &token_id);
+
+    // The address we want to allowlist
+    let alice = Address::generate(&env);
+
+    // Confirm alice is initially not allowlisted
+    assert!(!client.is_allowed(&alice));
+
+    // --- step 1: signer_a proposes and auto-approves (1 of 2 needed) ---
+    let prop_id = multisig.propose(
+        &signer_a,
+        &contract_id,
+        &soroban_sdk::vec![&env, alice.clone()],
+    );
+
+    // Only one approval — allowlist must NOT be updated yet
+    assert_eq!(multisig.approval_count(&prop_id), 1);
+    assert!(!client.is_allowed(&alice), "alice should not be allowlisted after only one approval");
+
+    // --- step 2: signer_b approves — threshold (2) met, proposal executes ---
+    let executed = multisig.approve(&signer_b, &prop_id);
+    assert!(executed, "proposal should execute once threshold is met");
+
+    // Now that the multisig threshold is met, call add_to_allowlist with
+    // the multisig contract address as the admin argument.
+    client.add_to_allowlist(&multisig_id, &alice);
+
+    // Alice is now allowlisted
+    assert!(client.is_allowed(&alice), "alice should be allowlisted after multisig-approved add");
+}
